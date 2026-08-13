@@ -690,15 +690,12 @@ func (h *ZohoHandler) GetProduct(c *gin.Context) {
 // SyncProducts actively fetches all products from the Zoho Books API
 func (h *ZohoHandler) SyncProducts(c *gin.Context) {
 	orgID := os.Getenv("ZOHO_ORGANIZATION_ID")
+	if orgID == "" {
+		orgID = "150001133818"
+	}
 	apiDomain := os.Getenv("ZOHO_API_DOMAIN")
-
 	if apiDomain == "" {
 		apiDomain = "https://www.zohoapis.sa"
-	}
-
-	if orgID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Missing required Zoho organization ID configuration"})
-		return
 	}
 
 	// 1. Refresh OAuth2 Access Token
@@ -909,8 +906,17 @@ func (h *ZohoHandler) getAccessToken() (string, error) {
 	lastFetchAttempt = now
 
 	clientID := os.Getenv("ZOHO_CLIENT_ID")
+	if clientID == "" {
+		clientID = "1000.Z1B5BZKPFYVCSX8JIQKSCTN7IV2OLB"
+	}
 	clientSecret := os.Getenv("ZOHO_CLIENT_SECRET")
+	if clientSecret == "" {
+		clientSecret = "b35add14bc8ae1a035dcd7d313bd503df26ad3c611"
+	}
 	refreshToken := os.Getenv("ZOHO_REFRESH_TOKEN")
+	if refreshToken == "" {
+		refreshToken = "1000.8e8c21b0088dd3c929100cc5703f086a.91ad977d67ab7af7b875d38765ecd36e"
+	}
 
 	if clientID == "" || clientSecret == "" || refreshToken == "" {
 		lastFetchFailed = true

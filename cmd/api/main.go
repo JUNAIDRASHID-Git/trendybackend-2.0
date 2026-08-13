@@ -26,6 +26,21 @@ func main() {
 	if os.Getenv("JWT_SECRET") == "" {
 		os.Setenv("JWT_SECRET", "super-secret-key-123")
 	}
+	if os.Getenv("ZOHO_CLIENT_ID") == "" {
+		os.Setenv("ZOHO_CLIENT_ID", "1000.Z1B5BZKPFYVCSX8JIQKSCTN7IV2OLB")
+	}
+	if os.Getenv("ZOHO_CLIENT_SECRET") == "" {
+		os.Setenv("ZOHO_CLIENT_SECRET", "b35add14bc8ae1a035dcd7d313bd503df26ad3c611")
+	}
+	if os.Getenv("ZOHO_ORGANIZATION_ID") == "" {
+		os.Setenv("ZOHO_ORGANIZATION_ID", "150001133818")
+	}
+	if os.Getenv("ZOHO_REFRESH_TOKEN") == "" {
+		os.Setenv("ZOHO_REFRESH_TOKEN", "1000.8e8c21b0088dd3c929100cc5703f086a.91ad977d67ab7af7b875d38765ecd36e")
+	}
+	if os.Getenv("ZOHO_API_DOMAIN") == "" {
+		os.Setenv("ZOHO_API_DOMAIN", "https://www.zohoapis.sa")
+	}
 
 	// Initialize Database
 	database, err := db.Connect()
