@@ -1,0 +1,11 @@
+.git
+.gitignore
+.env
+*.exe
+api
+api_test
+server
+tmp_bin
+tmp_bin.exe
+uploads/*
+!uploads/.gitkeep

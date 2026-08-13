@@ -1,0 +1,18 @@
+# Binaries and build artifacts
+api
+*.exe
+tmp_bin
+tmp_bin.exe
+api_test.exe
+server.exe
+
+# Environment & credentials
+.env
+
+# Uploaded files
+uploads/
+
+# OS and Editor files
+.DS_Store
+.vscode/
+.idea/
