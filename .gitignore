@@ -1,10 +1,10 @@
 # Binaries and build artifacts
-api
+/api
+/api_test
+/server
 *.exe
 tmp_bin
 tmp_bin.exe
-api_test.exe
-server.exe
 
 # Environment & credentials
 .env
