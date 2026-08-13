@@ -723,10 +723,14 @@ func (h *ZohoHandler) SyncProducts(c *gin.Context) {
 	// 2. Fetch Items from Zoho Books API (with Pagination)
 	var allItems []ZohoItem
 	page := 1
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := &http.Client{Timeout: 30 * time.Second}
+	var firstPageRaw string // for debug
 
 	for {
-		apiURL := fmt.Sprintf("%s/books/v3/items?organization_id=%s&page=%d&per_page=200&filter_by=Status.Active", apiDomain, orgID, page)
+		// No filter_by — fetch ALL items regardless of status so nothing is excluded
+		apiURL := fmt.Sprintf("%s/books/v3/items?organization_id=%s&page=%d&per_page=200", apiDomain, orgID, page)
+		log.Printf("[ZOHO SYNC] Fetching: %s", apiURL)
+
 		req, err := http.NewRequest("GET", apiURL, nil)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create Zoho API request: " + err.Error()})
@@ -743,8 +747,22 @@ func (h *ZohoHandler) SyncProducts(c *gin.Context) {
 		bodyBytes, _ := io.ReadAll(itemsResp.Body)
 		itemsResp.Body.Close()
 
+		// Save first page raw response for debug output
+		if page == 1 {
+			if len(bodyBytes) > 1000 {
+				firstPageRaw = string(bodyBytes[:1000]) + "...(truncated)"
+			} else {
+				firstPageRaw = string(bodyBytes)
+			}
+		}
+		log.Printf("[ZOHO SYNC] Page %d HTTP %d, body: %.500s", page, itemsResp.StatusCode, string(bodyBytes))
+
 		if itemsResp.StatusCode != http.StatusOK {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Zoho API returned status %d: %s", itemsResp.StatusCode, string(bodyBytes))})
+			c.JSON(http.StatusBadGateway, gin.H{
+				"error":        fmt.Sprintf("Zoho API returned HTTP %d", itemsResp.StatusCode),
+				"zoho_message": string(bodyBytes),
+				"synced_count": 0,
+			})
 			return
 		}
 
@@ -760,15 +778,23 @@ func (h *ZohoHandler) SyncProducts(c *gin.Context) {
 		}
 
 		if err := json.Unmarshal(bodyBytes, &booksResponse); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse Zoho Items response", "details": string(bodyBytes)})
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error":        "Failed to parse Zoho Items response: " + err.Error(),
+				"zoho_raw":     string(bodyBytes),
+				"synced_count": 0,
+			})
 			return
 		}
 
 		if booksResponse.Code != 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Zoho API error (%d): %s", booksResponse.Code, booksResponse.Message)})
+			c.JSON(http.StatusBadGateway, gin.H{
+				"error":        fmt.Sprintf("Zoho API error (%d): %s", booksResponse.Code, booksResponse.Message),
+				"synced_count": 0,
+			})
 			return
 		}
 
+		log.Printf("[ZOHO SYNC] Page %d: got %d items, hasMore=%v", page, len(booksResponse.Items), booksResponse.PageContext.HasMorePage)
 		allItems = append(allItems, booksResponse.Items...)
 
 		if !booksResponse.PageContext.HasMorePage {
@@ -776,6 +802,7 @@ func (h *ZohoHandler) SyncProducts(c *gin.Context) {
 		}
 		page++
 	}
+	log.Printf("[ZOHO SYNC] Total items from Zoho: %d", len(allItems))
 
 	// 3. Upsert items into database and broadcast changes in real-time
 	syncedCount := 0
@@ -854,7 +881,12 @@ func (h *ZohoHandler) SyncProducts(c *gin.Context) {
 
 	go h.syncTrendingItems(accessToken, apiDomain, orgID)
 
-	c.JSON(http.StatusOK, gin.H{"message": "Products synchronized successfully", "synced_count": syncedCount})
+	c.JSON(http.StatusOK, gin.H{
+		"message":       "Products synchronized from Zoho Books",
+		"synced_count":  syncedCount,
+		"total_fetched": len(allItems),
+		"zoho_preview":  firstPageRaw, // shows first page of what Zoho returned
+	})
 }
 
 // getAccessToken fetches a fresh Zoho Books access token using the OAuth refresh token flow
