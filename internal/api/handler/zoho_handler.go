@@ -687,7 +687,6 @@ func (h *ZohoHandler) GetProduct(c *gin.Context) {
 	c.JSON(http.StatusOK, product)
 }
 
-
 // SyncProducts actively fetches all products from the Zoho Books API
 func (h *ZohoHandler) SyncProducts(c *gin.Context) {
 	orgID := os.Getenv("ZOHO_ORGANIZATION_ID")
@@ -705,21 +704,7 @@ func (h *ZohoHandler) SyncProducts(c *gin.Context) {
 	// 1. Refresh OAuth2 Access Token
 	accessToken, err := h.getAccessToken()
 	if err != nil {
-		log.Printf("[ZOHO SYNC ERROR] Failed to refresh Zoho OAuth token: %v. Falling back to local/simulated sync.", err)
-		
-		// Recalculate trending items locally
-		h.fallbackTrendingItems()
-
-		// Fetch count of local products to return as synced count
-		var localCount int64
-		if errDb := h.db.Model(&domain.ZohoProduct{}).Count(&localCount).Error; errDb != nil {
-			localCount = 0
-		}
-
-		c.JSON(http.StatusOK, gin.H{
-			"message":      "Products synchronized successfully (Simulated Sync due to Zoho API configuration/authentication issue)",
-			"synced_count": localCount,
-		})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Failed to refresh Zoho OAuth token: " + err.Error()})
 		return
 	}
 
@@ -741,10 +726,9 @@ func (h *ZohoHandler) SyncProducts(c *gin.Context) {
 	client := &http.Client{Timeout: 15 * time.Second}
 
 	for {
-		apiURL := fmt.Sprintf("%s/books/v3/items?organization_id=%s&page=%d&per_page=200", apiDomain, orgID, page)
+		apiURL := fmt.Sprintf("%s/books/v3/items?organization_id=%s&page=%d&per_page=200&filter_by=Status.Active", apiDomain, orgID, page)
 		req, err := http.NewRequest("GET", apiURL, nil)
 		if err != nil {
-			log.Printf("[ZOHO SYNC ERROR] Failed to create request: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create Zoho API request: " + err.Error()})
 			return
 		}
@@ -752,8 +736,15 @@ func (h *ZohoHandler) SyncProducts(c *gin.Context) {
 
 		itemsResp, err := client.Do(req)
 		if err != nil {
-			log.Printf("[ZOHO SYNC ERROR] Failed to send request: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch items from Zoho: " + err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send request: " + err.Error()})
+			return
+		}
+
+		bodyBytes, _ := io.ReadAll(itemsResp.Body)
+		itemsResp.Body.Close()
+
+		if itemsResp.StatusCode != http.StatusOK {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Zoho API returned status %d: %s", itemsResp.StatusCode, string(bodyBytes))})
 			return
 		}
 
@@ -768,22 +759,15 @@ func (h *ZohoHandler) SyncProducts(c *gin.Context) {
 			} `json:"page_context"`
 		}
 
-		decodeErr := json.NewDecoder(itemsResp.Body).Decode(&booksResponse)
-		itemsResp.Body.Close() // Close response body immediately
-
-		if decodeErr != nil {
-			log.Printf("[ZOHO SYNC ERROR] Failed to decode response: %v", decodeErr)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse Zoho Items response: " + decodeErr.Error()})
+		if err := json.Unmarshal(bodyBytes, &booksResponse); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse Zoho Items response", "details": string(bodyBytes)})
 			return
 		}
 
 		if booksResponse.Code != 0 {
-			log.Printf("[ZOHO SYNC ERROR] Zoho API returned error code %d: %s", booksResponse.Code, booksResponse.Message)
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Zoho API error (%d): %s", booksResponse.Code, booksResponse.Message)})
 			return
 		}
-
-		fmt.Printf("[SYNC DEBUG] Page %d: Fetched %d items from Zoho. HasMorePage: %t\n", page, len(booksResponse.Items), booksResponse.PageContext.HasMorePage)
 
 		allItems = append(allItems, booksResponse.Items...)
 
@@ -798,7 +782,6 @@ func (h *ZohoHandler) SyncProducts(c *gin.Context) {
 	retrievedIDs := make(map[string]bool)
 	for _, item := range allItems {
 		retrievedIDs[item.ItemID] = true
-		// Process Category and SubCategory if present
 		var categoryID uint
 		var subCategoryID uint
 
@@ -809,12 +792,7 @@ func (h *ZohoHandler) SyncProducts(c *gin.Context) {
 			var cat domain.Category
 			err := h.db.Where("name = ?", categoryName).First(&cat).Error
 			if err != nil {
-				cat = domain.Category{
-					Name:        categoryName,
-					Description: "Synchronized from Zoho Books API",
-					CreatedAt:   time.Now(),
-					UpdatedAt:   time.Now(),
-				}
+				cat = domain.Category{Name: categoryName, CreatedAt: time.Now(), UpdatedAt: time.Now()}
 				if createErr := h.db.Create(&cat).Error; createErr == nil {
 					categoryID = cat.ID
 				}
@@ -826,13 +804,7 @@ func (h *ZohoHandler) SyncProducts(c *gin.Context) {
 				var sub domain.SubCategory
 				err := h.db.Where("name = ? AND category_id = ?", subCategoryName, categoryID).First(&sub).Error
 				if err != nil {
-					sub = domain.SubCategory{
-						Name:        subCategoryName,
-						Description: "Synchronized from Zoho Books API",
-						CategoryID:  categoryID,
-						CreatedAt:   time.Now(),
-						UpdatedAt:   time.Now(),
-					}
+					sub = domain.SubCategory{Name: subCategoryName, CategoryID: categoryID, CreatedAt: time.Now(), UpdatedAt: time.Now()}
 					if createErr := h.db.Create(&sub).Error; createErr == nil {
 						subCategoryID = sub.ID
 					}
@@ -842,7 +814,6 @@ func (h *ZohoHandler) SyncProducts(c *gin.Context) {
 			}
 		}
 
-		// Prepare product model for UPSERT
 		product := domain.ZohoProduct{
 			ZohoItemID:          item.ItemID,
 			Name:                item.Name,
@@ -852,53 +823,38 @@ func (h *ZohoHandler) SyncProducts(c *gin.Context) {
 			Stock:               int(item.StockOnHand),
 			CategoryID:          categoryID,
 			SubCategoryID:       subCategoryID,
-			IsVisibleToCustomer: true, // Default to true for new items
+			IsVisibleToCustomer: true,
 			UpdatedAt:           time.Now(),
 		}
 
-		// Perform UPSERT: ON CONFLICT (zoho_item_id) DO UPDATE
-		// We keep is_visible_to_customer and created_at on conflict
 		err := h.db.Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "zoho_item_id"}},
 			DoUpdates: clause.AssignmentColumns([]string{"name", "description", "rate", "sku", "stock", "category_id", "sub_category_id", "updated_at"}),
 		}).Create(&product).Error
 
-		if err != nil {
-			// Log error and continue to avoid halting the sync of other items
-			fmt.Printf("[SYNC ERROR] Failed to upsert Zoho product %s: %v\n", item.ItemID, err)
-			continue
+		if err == nil {
+			var fullProduct domain.ZohoProduct
+			if err := h.db.Where("zoho_item_id = ?", product.ZohoItemID).First(&fullProduct).Error; err == nil {
+				websocket.GetHub().Broadcast("zoho_product_sync", fullProduct)
+			}
+			syncedCount++
 		}
-
-		// Fetch the full record to ensure we have the correct state
-		var fullProduct domain.ZohoProduct
-		if err := h.db.Where("zoho_item_id = ?", product.ZohoItemID).First(&fullProduct).Error; err == nil {
-			// Broadcast the synced product state in real-time
-			websocket.GetHub().Broadcast("zoho_product_sync", fullProduct)
-		}
-		syncedCount++
 	}
 
-	// 4. Find and delete products locally that were deleted/removed from Zoho Books
 	var localProducts []domain.ZohoProduct
 	if err := h.db.Find(&localProducts).Error; err == nil {
 		for _, p := range localProducts {
 			if !retrievedIDs[p.ZohoItemID] {
-				// Delete from database
 				if err := h.db.Delete(&p).Error; err == nil {
-					// Broadcast deletion event
 					websocket.GetHub().Broadcast("zoho_product_delete", p.ZohoItemID)
 				}
 			}
 		}
 	}
 
-	// Async sync of trending items from sales history
 	go h.syncTrendingItems(accessToken, apiDomain, orgID)
 
-	c.JSON(http.StatusOK, gin.H{
-		"message":      "Products synchronized from Zoho Books successfully",
-		"synced_count": syncedCount,
-	})
+	c.JSON(http.StatusOK, gin.H{"message": "Products synchronized successfully", "synced_count": syncedCount})
 }
 
 // getAccessToken fetches a fresh Zoho Books access token using the OAuth refresh token flow
