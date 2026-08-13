@@ -1,12 +1,10 @@
-FROM golang:alpine AS builder
+# Build Stage (Debian-based golang image for full toolchain & glibc compatibility)
+FROM golang:latest AS builder
 
 WORKDIR /app
 
-ENV GOTOOLCHAIN=auto
-
-
-# Install build tools and CA certificates
-RUN apk add --no-cache git ca-certificates tzdata
+# Install git and CA certificates
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates tzdata && rm -rf /var/lib/apt/lists/*
 
 # Cache dependencies
 COPY go.mod go.sum ./
@@ -18,12 +16,12 @@ COPY . .
 # Build statically linked binary
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o server ./cmd/api/main.go
 
-# Production Stage
+# Production Stage (Lightweight Alpine container)
 FROM alpine:latest
 
 WORKDIR /app
 
-# Install CA certificates and timezone data for external API calls (Gemini, Zoho)
+# Install CA certificates and timezone data for external API calls
 RUN apk add --no-cache ca-certificates tzdata
 
 # Copy binary from builder
